@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>HyperOS Auto Unlock</title>
+<style>
+  :root {
+    --orange: #ff6900;
+    --bg0: #07070a;
+    --bg1: #14111a;
+    --gray: #a7a7b4;
+    --danger: #ff5c5c;
+    --success: #3ddc84;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: linear-gradient(180deg, var(--bg0), var(--bg1), var(--bg0));
+    color: #fff;
+    min-height: 100vh;
+    padding: 24px 16px 60px;
+  }
+  .wrap { max-width: 520px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--gray); font-size: 12px; margin-bottom: 20px; }
+  .panel {
+    background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.03));
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 16px;
+    padding: 16px;
+    margin-bottom: 14px;
+  }
+  .row { display: flex; gap: 12px; }
+  .row > div { flex: 1; }
+  label { font-size: 11px; color: var(--gray); display: block; margin-bottom: 4px; }
+  input {
+    width: 100%;
+    background: rgba(0,0,0,0.3);
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 10px;
+    color: #fff;
+    padding: 10px 12px;
+    font-size: 14px;
+  }
+  input:focus { outline: none; border-color: var(--orange); }
+  button {
+    border: none;
+    border-radius: 12px;
+    padding: 12px 16px;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    width: 100%;
+  }
+  .btn-primary { background: var(--orange); color: #fff; }
+  .btn-danger { background: var(--danger); color: #fff; }
+  .btn-ghost { background: rgba(255,255,255,0.08); color: #fff; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .status-grid { display: flex; gap: 10px; margin-bottom: 14px; }
+  .status-card { flex: 1; text-align: center; padding: 12px; }
+  .status-card .title { font-size: 11px; color: var(--gray); }
+  .status-card .value { font-size: 18px; font-weight: 700; color: var(--orange); margin-top: 4px; }
+  .countdown { text-align: center; font-size: 17px; font-weight: 700; }
+  .waves { display: flex; gap: 8px; margin-bottom: 14px; }
+  .wave { flex: 1; border-radius: 12px; padding: 8px; text-align: center; border: 1px solid rgba(255,255,255,0.2); font-size: 11px; }
+  .wave.SENDING { background: rgba(230,162,60,0.28); border-color: #e6a23c; }
+  .wave.SUCCESS { background: rgba(61,220,132,0.28); border-color: var(--success); }
+  .wave.FULL { background: rgba(255,92,92,0.28); border-color: var(--danger); }
+  .wave.ERROR { background: rgba(144,147,153,0.28); border-color: #909399; }
+  #log {
+    background: rgba(0,0,0,0.45);
+    border-radius: 12px;
+    padding: 10px;
+    height: 220px;
+    overflow-y: auto;
+    font-family: 'SFMono-Regular', Menlo, Consolas, monospace;
+    font-size: 12px;
+    color: var(--success);
+    white-space: pre-wrap;
+  }
+  .error { color: var(--danger); font-size: 12px; margin-top: 6px; }
+  .hint { color: var(--gray); font-size: 11px; margin-top: 6px; }
+  .spacer { height: 10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>HyperOS Auto Unlock</h1>
+  <div class="sub">Precision-timed bootloader slot reservation</div>
+
+  <div class="status-grid">
+    <div class="panel status-card"><div class="title">Latency</div><div class="value" id="latency">--</div></div>
+    <div class="panel status-card"><div class="title">NTP Offset</div><div class="value" id="ntp">--</div></div>
+  </div>
+
+  <div class="panel countdown" id="countdown">Ready</div>
+  <div class="spacer"></div>
+
+  <div class="panel" id="loginPanel">
+    <div id="loginIdle">
+      <label>Username / Email</label>
+      <input id="user" type="text" autocomplete="username" />
+      <div class="spacer"></div>
+      <label>Password</label>
+      <input id="password" type="password" autocomplete="current-password" />
+      <div class="error" id="loginError"></div>
+      <div class="spacer"></div>
+      <button class="btn-primary" id="signInBtn">Sign In</button>
+      <div class="hint">Or paste a cookie directly below and skip sign-in.</div>
+    </div>
+
+    <div id="loginOtp" style="display:none">
+      <div style="font-weight:700;color:var(--orange)">Email Verification</div>
+      <div class="hint" id="maskedEmailInfo"></div>
+      <div class="spacer"></div>
+      <label>Code received by email</label>
+      <input id="otpCode" type="text" inputmode="numeric" />
+      <div class="error" id="otpError"></div>
+      <div class="spacer"></div>
+      <button class="btn-primary" id="confirmCodeBtn">Confirm Code</button>
+      <div class="spacer"></div>
+      <button class="btn-ghost" id="resendCodeBtn">Resend code</button>
+    </div>
+
+    <div id="loginDone" style="display:none">
+      <div style="color:var(--success);font-weight:700" id="loggedInAs"></div>
+      <div class="spacer"></div>
+      <button class="btn-ghost" id="logoutBtn">Log out / switch account</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <label>Cookie String (auto-filled after sign-in, or paste manually)</label>
+    <input id="cookie" type="text" placeholder="new_bbs_serviceToken=...;versionCode=...;" />
+  </div>
+
+  <div class="panel">
+    <label>Max Triggers</label>
+    <input id="maxTriggers" type="number" value="4" min="1" />
+  </div>
+
+  <button class="btn-primary" id="startBtn">Verify &amp; Start Process</button>
+  <button class="btn-danger" id="stopBtn" style="display:none">Abort Process</button>
+  <div class="spacer"></div>
+
+  <div class="waves" id="waves"></div>
+
+  <div class="panel">
+    <div id="log"></div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const logEl = $('log');
+const wavesEl = $('waves');
+
+function addLog(msg) {
+  logEl.textContent += (logEl.textContent ? '\n' : '') + msg;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function renderStatus(s) {
+  $('latency').textContent = s.latencyMs != null ? s.latencyMs + 'ms' : '--';
+  $('ntp').textContent = s.ntpOffsetMs != null ? s.ntpOffsetMs + 'ms' : '--';
+  $('countdown').textContent = s.countdownText || 'Ready';
+  $('startBtn').style.display = s.isRunning ? 'none' : 'block';
+  $('stopBtn').style.display = s.isRunning ? 'block' : 'none';
+  if (s.waves && s.waves.length) renderWaves(s.waves);
+}
+
+function renderWaves(waves) {
+  wavesEl.innerHTML = '';
+  waves.forEach((w) => {
+    const div = document.createElement('div');
+    div.className = 'wave ' + w.state;
+    div.innerHTML = '<div>' + w.offsetLabel + '</div><div>' + w.resultText + '</div>';
+    wavesEl.appendChild(div);
+  });
+}
+
+// --- SSE ---
+const es = new EventSource('/api/stream');
+es.addEventListener('log', (e) => addLog(JSON.parse(e.data).message));
+es.addEventListener('status', (e) => renderStatus(JSON.parse(e.data)));
+es.addEventListener('wave', (e) => {
+  const w = JSON.parse(e.data);
+  const nodes = wavesEl.children;
+  if (nodes[w.id - 1]) {
+    nodes[w.id - 1].className = 'wave ' + w.state;
+    nodes[w.id - 1].innerHTML = '<div>' + w.offsetLabel + '</div><div>' + w.resultText + '</div>';
+  }
+});
+es.addEventListener('done', () => addLog('[UI] Process finished.'));
+
+// --- Login flow ---
+$('signInBtn').onclick = async () => {
+  $('loginError').textContent = '';
+  const user = $('user').value.trim();
+  const password = $('password').value;
+  if (!user || !password) { $('loginError').textContent = 'Enter username and password.'; return; }
+  $('signInBtn').disabled = true;
+  $('signInBtn').textContent = 'Signing in...';
+  try {
+    const r = await fetch('/api/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user, password }),
+    });
+    const data = await r.json();
+    if (!r.ok) { $('loginError').textContent = data.error || 'Login failed.'; return; }
+    if (data.status === 'need_code') {
+      $('maskedEmailInfo').textContent = data.maskedEmail + ' (' + data.attemptsLeft + ' attempt(s) left today)';
+      $('loginIdle').style.display = 'none';
+      $('loginOtp').style.display = 'block';
+    } else if (data.status === 'logged_in') {
+      onLoggedIn(data);
+    }
+  } catch (e) {
+    $('loginError').textContent = e.message;
+  } finally {
+    $('signInBtn').disabled = false;
+    $('signInBtn').textContent = 'Sign In';
+  }
+};
+
+$('confirmCodeBtn').onclick = async () => {
+  $('otpError').textContent = '';
+  const code = $('otpCode').value.trim();
+  if (!code) { $('otpError').textContent = 'Enter the code you received by email.'; return; }
+  $('confirmCodeBtn').disabled = true;
+  $('confirmCodeBtn').textContent = 'Verifying...';
+  try {
+    const r = await fetch('/api/verify-code', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+    const data = await r.json();
+    if (!r.ok) { $('otpError').textContent = data.error || 'Verification failed.'; return; }
+    onLoggedIn(data);
+  } catch (e) {
+    $('otpError').textContent = e.message;
+  } finally {
+    $('confirmCodeBtn').disabled = false;
+    $('confirmCodeBtn').textContent = 'Confirm Code';
+  }
+};
+
+$('resendCodeBtn').onclick = async () => {
+  await fetch('/api/resend-code', { method: 'POST' });
+  addLog('[Login] Verification code resent.');
+};
+
+function onLoggedIn(data) {
+  $('cookie').value = data.cookie;
+  $('loginIdle').style.display = 'none';
+  $('loginOtp').style.display = 'none';
+  $('loginDone').style.display = 'block';
+  $('loggedInAs').textContent = '✅ ' + data.account.userId + ' • ' + data.account.region;
+  $('password').value = '';
+}
+
+$('logoutBtn').onclick = async () => {
+  await fetch('/api/logout', { method: 'POST' });
+  $('loginDone').style.display = 'none';
+  $('loginIdle').style.display = 'block';
+  $('user').value = '';
+  $('password').value = '';
+  $('cookie').value = '';
+};
+
+// Restore a session that was persisted server-side (e.g. across an
+// UptimeRobot-triggered restart) so you don't have to re-login every time.
+async function restoreSession() {
+  try {
+    const r = await fetch('/api/account');
+    const data = await r.json();
+    if (data.loggedIn) {
+      onLoggedIn(data);
+      addLog('[Login] Restored persisted session for ' + data.account.userId + '.');
+    }
+  } catch (_) {
+    // ignore — user can still log in manually
+  }
+}
+restoreSession();
+
+// --- Start/Stop ---
+$('startBtn').onclick = async () => {
+  const cookie = $('cookie').value.trim();
+  const maxTriggers = parseInt($('maxTriggers').value, 10) || 4;
+  if (!cookie) { addLog('[!] Cookie cannot be empty.'); return; }
+  const r = await fetch('/api/start', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cookie, maxTriggers }),
+  });
+  const data = await r.json();
+  if (!r.ok) addLog('[!] ' + (data.error || 'Failed to start.'));
+};
+
+$('stopBtn').onclick = async () => {
+  await fetch('/api/stop', { method: 'POST' });
+};
+
+// initial status
+fetch('/api/status').then((r) => r.json()).then(renderStatus);
+</script>
+</body>
+</html>
