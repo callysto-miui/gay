@@ -195,6 +195,19 @@ es.addEventListener('wave', (e) => {
 });
 es.addEventListener('done', () => addLog('[UI] Process finished.'));
 
+// Reads a fetch Response as JSON, but if the body isn't actually JSON
+// (e.g. a host/proxy-level error page like a raw 404 "Not Found" that never
+// reached our Express app), surface the raw text + status instead of letting
+// JSON.parse throw an opaque "Unexpected token" error.
+async function readJsonSafe(r) {
+  const text = await r.text();
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    return { error: `Server returned a non-JSON response (HTTP ${r.status}): "${text.slice(0, 200)}"` };
+  }
+}
+
 // --- Login flow ---
 $('signInBtn').onclick = async () => {
   $('loginError').textContent = '';
@@ -208,7 +221,7 @@ $('signInBtn').onclick = async () => {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ user, password }),
     });
-    const data = await r.json();
+    const data = await readJsonSafe(r);
     if (!r.ok) { $('loginError').textContent = data.error || 'Login failed.'; return; }
     if (data.status === 'need_code') {
       $('maskedEmailInfo').textContent = data.maskedEmail + ' (' + data.attemptsLeft + ' attempt(s) left today)';
@@ -236,7 +249,7 @@ $('confirmCodeBtn').onclick = async () => {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code }),
     });
-    const data = await r.json();
+    const data = await readJsonSafe(r);
     if (!r.ok) { $('otpError').textContent = data.error || 'Verification failed.'; return; }
     onLoggedIn(data);
   } catch (e) {
