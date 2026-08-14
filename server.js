@@ -191,7 +191,19 @@ app.get('/termux/setup/:token', (req, res) => {
     `#!/data/data/com.termux/files/usr/bin/bash\n` +
     `set -e\n` +
     `echo "== HyperOS AAU: one-time Termux setup =="\n` +
-    `pkg install -y python\n` +
+    `# Skip the slow/flaky mirror benchmark by pinning a known-fast mirror,\n` +
+    `# then retry install a few times in case of transient network drops.\n` +
+    `echo "deb https://packages.termux.dev/apt/termux-main stable main" > $PREFIX/etc/apt/sources.list\n` +
+    `ok=0\n` +
+    `for i in 1 2 3; do\n` +
+    `  pkg update -y && pkg install -y python && { ok=1; break; }\n` +
+    `  echo "[setup] install attempt $i failed, retrying in 5s..." >&2\n` +
+    `  sleep 5\n` +
+    `done\n` +
+    `if [ "$ok" != "1" ]; then\n` +
+    `  echo "[setup] pkg install python failed after 3 attempts — check your phone's network and re-run the curl command (link is still valid until used)." >&2\n` +
+    `  exit 1\n` +
+    `fi\n` +
     `pip install --quiet --upgrade pip\n` +
     `pip install --quiet requests\n` +
     `curl -sSL "${base}/termux/push_cookie.py" -o push_cookie.py\n` +
