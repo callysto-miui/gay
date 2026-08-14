@@ -291,20 +291,8 @@ $('genTermuxBtn').onclick = async () => {
     $('termuxResult').style.display = 'block';
     addLog('[Provision] One-time Termux setup link generated. Paste the command into Termux.');
 
-    let remaining = data.expiresInSeconds;
     if (termuxExpiryTimer) clearInterval(termuxExpiryTimer);
-    const tick = () => {
-      if (remaining <= 0) {
-        $('termuxExpiry').textContent = 'Expired — generate a new one to use it.';
-        clearInterval(termuxExpiryTimer);
-        return;
-      }
-      const m = Math.floor(remaining / 60), s = remaining % 60;
-      $('termuxExpiry').textContent = `Single-use — expires in ${m}:${String(s).padStart(2, '0')}, or immediately after it's used once.`;
-      remaining -= 1;
-    };
-    tick();
-    termuxExpiryTimer = setInterval(tick, 1000);
+    $('termuxExpiry').textContent = 'Single-use — dies the instant it\'s used, or after 24h if never used.';
   } catch (e) {
     addLog('[!] ' + e.message);
   } finally {
