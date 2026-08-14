@@ -132,6 +132,22 @@
   </div>
 
   <div class="panel">
+    <label>Termux (login from your phone instead)</label>
+    <div class="hint">Generates a one-time link. Paste the command into Termux — it installs Python, asks for your Xiaomi account there, and pushes the cookie back here. The link only works once; generate a new one each time you need to log in again.</div>
+    <div class="spacer"></div>
+    <button class="btn-ghost" id="genTermuxBtn">Generate Termux Setup</button>
+    <div id="termuxResult" style="display:none">
+      <div class="spacer"></div>
+      <input id="termuxCmd" type="text" readonly onclick="this.select()" />
+      <div class="spacer"></div>
+      <div class="row">
+        <div><button class="btn-ghost" id="copyTermuxBtn">Copy command</button></div>
+      </div>
+      <div class="hint" id="termuxExpiry"></div>
+    </div>
+  </div>
+
+  <div class="panel">
     <label>Cookie String (auto-filled after sign-in, or paste manually)</label>
     <input id="cookie" type="text" placeholder="new_bbs_serviceToken=...;versionCode=...;" />
   </div>
@@ -260,6 +276,53 @@ function onLoggedIn(data) {
   $('loggedInAs').textContent = '✅ ' + data.account.userId + ' • ' + data.account.region;
   $('password').value = '';
 }
+
+// --- Termux one-time setup ---
+let termuxExpiryTimer = null;
+
+$('genTermuxBtn').onclick = async () => {
+  $('genTermuxBtn').disabled = true;
+  $('genTermuxBtn').textContent = 'Generating...';
+  try {
+    const r = await fetch('/api/provision/generate', { method: 'POST' });
+    const data = await r.json();
+    if (!r.ok) { addLog('[!] ' + (data.error || 'Failed to generate setup link.')); return; }
+    $('termuxCmd').value = data.curl;
+    $('termuxResult').style.display = 'block';
+    addLog('[Provision] One-time Termux setup link generated. Paste the command into Termux.');
+
+    let remaining = data.expiresInSeconds;
+    if (termuxExpiryTimer) clearInterval(termuxExpiryTimer);
+    const tick = () => {
+      if (remaining <= 0) {
+        $('termuxExpiry').textContent = 'Expired — generate a new one to use it.';
+        clearInterval(termuxExpiryTimer);
+        return;
+      }
+      const m = Math.floor(remaining / 60), s = remaining % 60;
+      $('termuxExpiry').textContent = `Single-use — expires in ${m}:${String(s).padStart(2, '0')}, or immediately after it's used once.`;
+      remaining -= 1;
+    };
+    tick();
+    termuxExpiryTimer = setInterval(tick, 1000);
+  } catch (e) {
+    addLog('[!] ' + e.message);
+  } finally {
+    $('genTermuxBtn').disabled = false;
+    $('genTermuxBtn').textContent = 'Generate Termux Setup';
+  }
+};
+
+$('copyTermuxBtn').onclick = async () => {
+  try {
+    await navigator.clipboard.writeText($('termuxCmd').value);
+    $('copyTermuxBtn').textContent = 'Copied!';
+    setTimeout(() => { $('copyTermuxBtn').textContent = 'Copy command'; }, 1500);
+  } catch (_) {
+    $('termuxCmd').select();
+    document.execCommand('copy');
+  }
+};
 
 $('logoutBtn').onclick = async () => {
   await fetch('/api/logout', { method: 'POST' });
