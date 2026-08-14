@@ -16,6 +16,7 @@ const PORT = process.env.PORT || 3000;
 const service = new UnlockService();
 let pendingAuthClient = null; // set while an email-OTP flow is in progress
 let currentAccount = null; // last logged-in account (mirrors loggedInAccount in the Kotlin app)
+let lastPushedCookie = null; // raw cookie pushed by a companion device via /api/cookie (no full account)
 
 // Fast, dependency-free endpoint for uptime pingers (UptimeRobot etc) to hit
 // so the free-tier dyno doesn't spin down from inactivity. Keep this above
@@ -66,7 +67,7 @@ app.post('/api/login', async (req, res) => {
   if (!user || !password) {
     return res.status(400).json({ error: 'user and password are required' });
   }
-  const client = new XiaomiAuthClient();
+  const client = new XiaomiAuthClient((msg) => service.log(msg));
   pendingAuthClient = client;
   try {
     const account = await client.login(user, password);
@@ -123,20 +124,64 @@ app.post('/api/verify-code', async (req, res) => {
 });
 
 app.get('/api/account', (req, res) => {
-  if (!currentAccount) return res.json({ loggedIn: false });
-  return res.json({
-    loggedIn: true,
-    account: currentAccount,
-    cookie: XiaomiAuthClient.buildCookieHeader(currentAccount),
-  });
+  if (currentAccount) {
+    return res.json({
+      loggedIn: true,
+      account: currentAccount,
+      cookie: XiaomiAuthClient.buildCookieHeader(currentAccount),
+    });
+  }
+  if (lastPushedCookie) {
+    return res.json({ loggedIn: false, pushedCookie: lastPushedCookie });
+  }
+  return res.json({ loggedIn: false });
 });
 
 app.post('/api/logout', (req, res) => {
   currentAccount = null;
   pendingAuthClient = null;
+  lastPushedCookie = null;
   clearAccount();
   service.log('[Login] Logged out.');
   return res.json({ status: 'logged_out' });
+});
+
+/**
+ * Companion-device push endpoint. Meant for a script running on your OWN
+ * Android phone (e.g. via Termux) or PC on a trusted network to log in
+ * where Xiaomi doesn't flag the request, then hand the resulting cookie to
+ * this server — instead of the server attempting the login itself.
+ *
+ * Protect this: set COOKIE_PUSH_TOKEN in Render's env vars and send it as
+ * `Authorization: Bearer <token>`. Without that env var set, this endpoint
+ * is open to anyone who finds your URL — fine for local testing, not for
+ * a real deployment.
+ */
+app.post('/api/cookie', (req, res) => {
+  const configuredToken = process.env.COOKIE_PUSH_TOKEN;
+  if (configuredToken) {
+    const provided = (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+    if (provided !== configuredToken) {
+      return res.status(401).json({ error: 'Unauthorized — bad or missing push token.' });
+    }
+  }
+
+  const { cookie, account } = req.body || {};
+  if (!cookie && !account) {
+    return res.status(400).json({ error: 'Provide either "cookie" or "account".' });
+  }
+
+  if (account && account.userId && account.serviceToken && account.deviceId) {
+    currentAccount = account;
+    saveAccount(account);
+    lastPushedCookie = null;
+    service.log(`[Push] Received full account for ${account.userId} from companion device.`);
+  } else if (cookie) {
+    lastPushedCookie = cookie;
+    service.log('[Push] Received a raw cookie from companion device.');
+  }
+
+  return res.json({ status: 'ok' });
 });
 
 // --- Unlock service control ---

@@ -83,6 +83,89 @@ Caveat: Render's free-tier disk persists across sleep/wake cycles but is
 tiny external key-value service) — the three exported functions
 (`saveAccount`/`loadAccount`/`clearAccount`) are the only thing to swap out.
 
+## Login gets blocked by Xiaomi's anti-bot ("Not Found" / non-JSON errors)
+
+If sign-in fails with an error like `Xiaomi returned a non-JSON response
+during "..." (HTTP 404): "Not Found"`, that's Xiaomi's passport service
+(`account.xiaomi.com`) rejecting the request — not a bug in the port. Login
+endpoints for accounts services are commonly guarded by WAF/anti-bot layers
+that score requests by IP reputation. Datacenter/cloud IPs (Render, AWS,
+GCP, etc.) get flagged far more often than residential or mobile IPs, which
+is why the exact same request logic works from the Android app on your
+phone but not from a hosted server — the difference is the network origin,
+not the code.
+
+The server now logs each login step (`[Login] GET /pass/serviceLogin ->
+HTTP ...`) to the live console, so you can see exactly which step got
+blocked instead of a raw JSON-parse crash.
+
+**Workaround: do the login once outside Render, then only use the server
+for scheduling/firing.** The unlock-apply endpoint (`sgp-api.buy.mi.com`)
+tends to be far less aggressively gated than the passport login endpoints,
+so once you have a valid cookie the scheduled-firing part of this tool
+generally works fine from a cloud IP even when login doesn't:
+
+1. Run the Python (`xiaomi_unlock_automator.py`) or the original Android app
+   from your own machine/phone once, just to obtain the `Cookie` string
+   (`new_bbs_serviceToken=...;versionCode=...;versionName=...;deviceId=...;`).
+2. Paste that cookie directly into the web UI's "Cookie String" field
+   (skip the Sign In panel entirely) and hit "Verify & Start Process".
+3. Cookies are typically valid for a while, so you don't need to repeat
+   step 1 every day — just re-check with "Verify & Start Process" (it tests
+   the cookie before scheduling) and grab a fresh one if it's expired.
+
+If you'd rather keep the full in-browser login flow working from Render,
+the only reliable fix is routing the login requests through an IP that
+Xiaomi doesn't flag — e.g. a residential/mobile proxy, or hosting on a VPS
+in a region/provider with a cleaner reputation. That's an infrastructure
+change outside what code alone can fix.
+
+## "Android environment" for the login step — what actually helps
+
+Two ways to interpret "make it look like an Android device," with very
+different payoffs:
+
+**Full Android emulation (redroid/Waydroid) running the real APK inside a
+container.** This gives you the exact TLS/HTTP client fingerprint of a real
+Xiaomi device. It needs the kernel `binder` module and usually KVM
+passthrough — Render's shared web-service containers don't expose that, so
+this can't run there; you'd need a separate VPS with nested virtualization.
+And if the block is IP-reputation-based (very likely — see the section
+above), running a perfect device fingerprint from that *same* flagged cloud
+IP still doesn't fix it. Not recommended unless you already have spare VPS
+infrastructure with KVM support and want to go deep.
+
+**Push the cookie from a real Android device instead (recommended).** Your
+phone, via Termux, already *is* a correctly-fingerprinted Android
+environment on a residential/mobile IP — the thing Xiaomi actually trusts.
+Rather than trying to reproduce that inside a cloud container, just do the
+login there and hand the server the result:
+
+1. On Render, set an environment variable `COOKIE_PUSH_TOKEN` to some long
+   random string (this authenticates pushes to `/api/cookie` — without it,
+   the endpoint is open to anyone with your URL).
+2. On your phone: install [Termux](https://f-droid.org/packages/com.termux/),
+   then:
+   ```
+   pkg install python
+   pip install requests
+   python push_cookie.py --user you@example.com --password *** \
+       --server https://your-app.onrender.com --token YOUR_COOKIE_PUSH_TOKEN
+   ```
+   (`termux/push_cookie.py` is included in this repo — same login logic as
+   `xiaomi_unlock_automator.py`, just with a push step at the end.)
+3. It logs in from your phone's own network and POSTs the resulting cookie
+   to `/api/cookie` on your server. The web UI auto-loads it on next page
+   load (or refresh), and `/api/account` reflects it immediately.
+4. Cookies are typically valid for a while, so you don't need to run this
+   right at midnight — once a day or every few days is enough. Automate it
+   with Termux:Boot + `termux-job-scheduler`, or just run it manually before
+   the unlock window.
+
+This way: your phone (trusted network, correct fingerprint) does the one
+part Xiaomi is picky about, and Render (which is fine for outbound requests
+to the *apply* endpoint) does the precision timing/firing.
+
 ## Important caveats before you rely on this in production
 
 - **Free-tier sleep.** Render's free web services spin down after ~15 minutes
@@ -146,6 +229,7 @@ silently dropped.
 | POST   | `/api/verify-code` | `{ code }`                    | Finishes OTP login |
 | POST   | `/api/resend-code` | –                              | Resends email OTP |
 | POST   | `/api/test-cookie` | `{ cookie }`                  | Validates a cookie |
+| POST   | `/api/cookie`      | `{ cookie }` or `{ account }` | Companion-device push (see "Android environment" section). Requires `Authorization: Bearer <COOKIE_PUSH_TOKEN>` if that env var is set. |
 | POST   | `/api/start`       | `{ cookie, maxTriggers }`      | Begins the scheduled run |
 | POST   | `/api/stop`        | –                              | Aborts a running process |
 | GET    | `/api/status`      | –                              | Current status snapshot |
