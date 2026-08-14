@@ -139,32 +139,49 @@ infrastructure with KVM support and want to go deep.
 phone, via Termux, already *is* a correctly-fingerprinted Android
 environment on a residential/mobile IP — the thing Xiaomi actually trusts.
 Rather than trying to reproduce that inside a cloud container, just do the
-login there and hand the server the result:
+login there and hand the server the result. The web UI can generate a
+**one-time setup link** for this so you never have to type or remember a
+long-lived secret:
 
-1. On Render, set an environment variable `COOKIE_PUSH_TOKEN` to some long
-   random string (this authenticates pushes to `/api/cookie` — without it,
-   the endpoint is open to anyone with your URL).
+1. In the web UI, open the **"Termux"** panel and tap **Generate Termux
+   Setup**. You get a `curl ... | bash` command tied to a random token that
+   expires in 15 minutes and can only ever be used once.
 2. On your phone: install [Termux](https://f-droid.org/packages/com.termux/),
-   then:
-   ```
-   pkg install python
-   pip install requests
-   python push_cookie.py --user you@example.com --password *** \
-       --server https://your-app.onrender.com --token YOUR_COOKIE_PUSH_TOKEN
-   ```
-   (`termux/push_cookie.py` is included in this repo — same login logic as
-   `xiaomi_unlock_automator.py`, just with a push step at the end.)
+   then paste that exact command. It:
+   - installs `python` + `pip install requests`,
+   - downloads `termux/push_cookie.py` from your own server (not a
+     third-party host),
+   - runs it, which prompts you *right there in the terminal* for your
+     Xiaomi username and password (via `getpass`, so the password isn't
+     echoed and never appears in shell history or the curl command itself).
 3. It logs in from your phone's own network and POSTs the resulting cookie
-   to `/api/cookie` on your server. The web UI auto-loads it on next page
-   load (or refresh), and `/api/account` reflects it immediately.
-4. Cookies are typically valid for a while, so you don't need to run this
-   right at midnight — once a day or every few days is enough. Automate it
-   with Termux:Boot + `termux-job-scheduler`, or just run it manually before
-   the unlock window.
+   to `/api/cookie`, authenticated with that same one-time token. The
+   server **burns the token the instant that push succeeds** — the link
+   cannot be reused, replayed, or shared. The web UI auto-loads the fresh
+   cookie on next page load (or refresh), and `/api/account` reflects it
+   immediately.
+4. Need to log in again later (cookie expired, switching accounts, etc.)?
+   Just tap **Generate Termux Setup** again for a brand-new link — the old
+   one is already dead. There's nothing to rotate or revoke by hand.
+
+Cookies are typically valid for a while, so you don't need to do this right
+at midnight — once a day or every few days is enough. To automate it
+unattended, use Termux:Boot + `termux-job-scheduler` with a **static**
+token instead (see below), since a one-time link obviously can't be reused
+by a recurring cron job.
 
 This way: your phone (trusted network, correct fingerprint) does the one
 part Xiaomi is picky about, and Render (which is fine for outbound requests
 to the *apply* endpoint) does the precision timing/firing.
+
+**Alternative: a static, long-lived token.** If you'd rather run
+`push_cookie.py` yourself on a schedule (Termux:Boot, cron, etc.) instead of
+tapping "Generate Termux Setup" each time, set `COOKIE_PUSH_TOKEN` in
+Render's env vars to your own long random string and pass it as `--token`.
+Unlike a one-time link, this token is *not* consumed on use and works
+indefinitely — you're trading the one-time link's automatic expiry for the
+ability to automate the push unattended. Keep it secret either way: anyone
+with it can push a cookie into your scheduler.
 
 ## Important caveats before you rely on this in production
 
@@ -229,7 +246,10 @@ silently dropped.
 | POST   | `/api/verify-code` | `{ code }`                    | Finishes OTP login |
 | POST   | `/api/resend-code` | –                              | Resends email OTP |
 | POST   | `/api/test-cookie` | `{ cookie }`                  | Validates a cookie |
-| POST   | `/api/cookie`      | `{ cookie }` or `{ account }` | Companion-device push (see "Android environment" section). Requires `Authorization: Bearer <COOKIE_PUSH_TOKEN>` if that env var is set. |
+| POST   | `/api/provision/generate` | –                        | Mints a one-time Termux setup token (15 min TTL) + a `curl \| bash` command. |
+| GET    | `/termux/setup/:token`    | –                        | Bootstrap script the curl command runs. 410 + plain-text error if the token is dead. Peeking doesn't consume it. |
+| GET    | `/termux/push_cookie.py`  | –                        | Serves the companion script the bootstrap fetches. |
+| POST   | `/api/cookie`      | `{ cookie }` or `{ account }` | Companion-device push (see "Android environment" section). Requires `Authorization: Bearer <token>` — either a one-time provision token (consumed on success) or a static `COOKIE_PUSH_TOKEN` if that env var is set. |
 | POST   | `/api/start`       | `{ cookie, maxTriggers }`      | Begins the scheduled run |
 | POST   | `/api/stop`        | –                              | Aborts a running process |
 | GET    | `/api/status`      | –                              | Current status snapshot |

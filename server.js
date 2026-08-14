@@ -5,6 +5,7 @@ const path = require('path');
 const { XiaomiAuthClient, XiaomiLoginError, XiaomiEmailVerificationRequired } = require('./lib/xiaomiAuth');
 const { UnlockService } = require('./lib/unlockService');
 const { saveAccount, loadAccount, clearAccount } = require('./lib/store');
+const { generateToken, validateToken } = require('./lib/provision');
 
 const app = express();
 app.use(express.json());
@@ -147,23 +148,97 @@ app.post('/api/logout', (req, res) => {
 });
 
 /**
+ * One-time Termux provisioning.
+ *
+ * The web UI calls this to mint a fresh random token + a ready-to-paste
+ * `curl ... | bash` command. That command installs python/requests on the
+ * phone, fetches push_cookie.py from THIS server, and runs it — the script
+ * prompts for the Xiaomi account interactively (nothing sensitive rides
+ * along in the curl command or shell history). The same token is also what
+ * authorizes the resulting POST to /api/cookie below, and gets burned the
+ * moment that push succeeds — see lib/provision.js for the single-use logic.
+ */
+app.post('/api/provision/generate', (req, res) => {
+  const { token, ttlSeconds } = generateToken();
+  const base = `${req.protocol}://${req.get('host')}`;
+  const setupUrl = `${base}/termux/setup/${token}`;
+  service.log('[Provision] Generated a one-time Termux setup link.');
+  return res.json({
+    token,
+    expiresInSeconds: ttlSeconds,
+    setupUrl,
+    curl: `curl -sSL "${setupUrl}" | bash`,
+  });
+});
+
+// Bootstrap script fetched by the curl command above. Token is checked but
+// NOT consumed here — only a successful /api/cookie push burns it, so a
+// flaky connection retrying the curl doesn't cost you the one-time use.
+app.get('/termux/setup/:token', (req, res) => {
+  const check = validateToken(req.params.token);
+  res.type('text/x-shellscript');
+  if (!check.ok) {
+    return res.status(410).send(
+      `#!/data/data/com.termux/files/usr/bin/bash\n` +
+      `echo "This one-time setup link is invalid, expired, or already used (${check.reason})." >&2\n` +
+      `echo "Generate a new one from the web UI (\\"Generate Termux Setup\\") and re-run its curl command." >&2\n` +
+      `exit 1\n`
+    );
+  }
+  const base = `${req.protocol}://${req.get('host')}`;
+  const token = req.params.token;
+  return res.status(200).send(
+    `#!/data/data/com.termux/files/usr/bin/bash\n` +
+    `set -e\n` +
+    `echo "== HyperOS AAU: one-time Termux setup =="\n` +
+    `pkg install -y python\n` +
+    `pip install --quiet --upgrade pip\n` +
+    `pip install --quiet requests\n` +
+    `curl -sSL "${base}/termux/push_cookie.py" -o push_cookie.py\n` +
+    `echo "This link is single-use — the server rejects it after this push succeeds."\n` +
+    `python push_cookie.py --server "${base}" --token "${token}"\n`
+  );
+});
+
+// Serves the actual companion script the bootstrap command downloads.
+app.get('/termux/push_cookie.py', (req, res) => {
+  res.type('text/x-python').sendFile(path.join(__dirname, 'termux', 'push_cookie.py'));
+});
+
+/**
  * Companion-device push endpoint. Meant for a script running on your OWN
  * Android phone (e.g. via Termux) or PC on a trusted network to log in
  * where Xiaomi doesn't flag the request, then hand the resulting cookie to
  * this server — instead of the server attempting the login itself.
  *
- * Protect this: set COOKIE_PUSH_TOKEN in Render's env vars and send it as
- * `Authorization: Bearer <token>`. Without that env var set, this endpoint
- * is open to anyone who finds your URL — fine for local testing, not for
- * a real deployment.
+ * Two ways to authorize a push:
+ *   1. A one-time token minted by POST /api/provision/generate. Consumed
+ *      (burned) the instant this succeeds — reusing the same link/token
+ *      after that gets a 401, same as if it had never existed.
+ *   2. A static COOKIE_PUSH_TOKEN env var, for people who'd rather manage
+ *      their own long-lived secret than regenerate a link each time.
+ * Without either configured, the endpoint is open to anyone who finds your
+ * URL — fine for local testing, not for a real deployment.
  */
 app.post('/api/cookie', (req, res) => {
   const configuredToken = process.env.COOKIE_PUSH_TOKEN;
-  if (configuredToken) {
-    const provided = (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
-    if (provided !== configuredToken) {
-      return res.status(401).json({ error: 'Unauthorized — bad or missing push token.' });
+  const provided = (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+
+  let authorized = false;
+  let viaOneTimeToken = false;
+
+  if (configuredToken && provided === configuredToken) {
+    authorized = true;
+  } else if (provided) {
+    const check = validateToken(provided, { consume: true });
+    if (check.ok) {
+      authorized = true;
+      viaOneTimeToken = true;
     }
+  }
+
+  if (!authorized) {
+    return res.status(401).json({ error: 'Unauthorized — bad, missing, expired, or already-used token.' });
   }
 
   const { cookie, account } = req.body || {};
@@ -181,7 +256,11 @@ app.post('/api/cookie', (req, res) => {
     service.log('[Push] Received a raw cookie from companion device.');
   }
 
-  return res.json({ status: 'ok' });
+  if (viaOneTimeToken) {
+    service.log('[Provision] One-time setup link consumed — generate a new one from the UI to log in again.');
+  }
+
+  return res.json({ status: 'ok', oneTimeTokenConsumed: viaOneTimeToken });
 });
 
 // --- Unlock service control ---
