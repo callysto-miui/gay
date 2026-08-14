@@ -10,11 +10,19 @@ It logs into your Xiaomi account locally, then POSTs the resulting cookie to
 your deployed HyperOS AAU server's /api/cookie endpoint, so the server only
 ever has to do the (less-strict) scheduled firing, never the login itself.
 
-Setup on your phone:
+Normally you don't run this by hand — the web UI's "Generate Termux Setup"
+button gives you a one-time `curl ... | bash` command that installs
+python/requests and launches this script with --server/--token already
+filled in. You'll just be prompted for your Xiaomi username and password
+right here in the terminal (via getpass, so the password isn't echoed and
+never touches shell history or the curl command itself).
+
+Manual/advanced usage (e.g. with a static COOKIE_PUSH_TOKEN instead of a
+one-time link):
     pkg install python
     pip install requests
-    python push_cookie.py --user you@example.com --password *** \
-        --server https://your-app.onrender.com --token YOUR_COOKIE_PUSH_TOKEN
+    python push_cookie.py --server https://your-app.onrender.com --token YOUR_TOKEN
+    # (you'll be prompted for username/password)
 
 Then automate it (pick one):
     - Termux:Boot + a cron-like scheduler (e.g. `termux-job-scheduler`) to
@@ -23,13 +31,17 @@ Then automate it (pick one):
       cookies are typically valid for a while, so this doesn't need to run
       right at midnight, only "recently enough."
 
---token should match the COOKIE_PUSH_TOKEN environment variable you set on
-your Render service — without it, anyone who finds your server's URL could
-push their own cookie into your scheduler.
+--token: if it came from "Generate Termux Setup" it's a ONE-TIME token —
+the server burns it the instant this push succeeds, so the same link/token
+can't be replayed, and logging in again means generating a fresh one from
+the UI. If instead you're using a static COOKIE_PUSH_TOKEN env var on the
+server, the same token can be reused indefinitely — your call which model
+to use.
 """
 
 import argparse
 import base64
+import getpass
 import hashlib
 import json
 import sys
@@ -185,21 +197,36 @@ def push_account(server: str, token: str, account: dict):
     if token:
         headers["Authorization"] = f"Bearer {token}"
     resp = requests.post(url, headers=headers, json={"account": account}, timeout=15)
+    if resp.status_code == 401:
+        print(
+            "[Push] Rejected (401) — this token is invalid, expired, or was already used once.\n"
+            "       One-time setup links only work a single time. Generate a new one from the\n"
+            "       web UI (\"Generate Termux Setup\") and re-run its curl command."
+        )
+        sys.exit(1)
     resp.raise_for_status()
     print(f"[Push] Sent to {url} -> {resp.status_code} {resp.json()}")
+    if resp.json().get("oneTimeTokenConsumed"):
+        print("[Push] Done. This link is now spent — next login needs a fresh one from the web UI.")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Log in to Xiaomi from this device, push the cookie to your server.")
-    parser.add_argument("--user", required=True)
-    parser.add_argument("--password", required=True)
+    parser.add_argument("--user", default=None, help="Xiaomi username/email. Omit to be prompted.")
+    parser.add_argument("--password", default=None, help="Omit to be prompted (recommended — avoids shell history).")
     parser.add_argument("--server", required=True, help="e.g. https://your-app.onrender.com")
-    parser.add_argument("--token", default="", help="COOKIE_PUSH_TOKEN configured on the server")
+    parser.add_argument("--token", default="", help="One-time link token, or a static COOKIE_PUSH_TOKEN")
     args = parser.parse_args()
+
+    user = args.user or input("Xiaomi username/email: ").strip()
+    password = args.password or getpass.getpass("Xiaomi password: ")
+    if not user or not password:
+        print("[Login] Username and password are required.")
+        sys.exit(1)
 
     auth = XiaomiAuthClient()
     try:
-        account = auth.login(args.user, args.password)
+        account = auth.login(user, password)
     except XiaomiEmailVerificationRequired as e:
         print(f"[Login] Email verification required: {e.masked_email} ({e.attempts_left} attempt(s) left today)")
         auth.send_email_code()
