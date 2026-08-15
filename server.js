@@ -204,8 +204,7 @@ app.get('/termux/setup/:token', (req, res) => {
     `  echo "[setup] pkg install python failed after 3 attempts — check your phone's network and re-run the curl command (link is still valid until used)." >&2\n` +
     `  exit 1\n` +
     `fi\n` +
-    `pip install --quiet --upgrade pip\n` +
-    `pip install --quiet requests\n` +
+    `pip install --quiet requests || pip install --quiet --break-system-packages requests\n` +
     `curl -sSL "${base}/termux/push_cookie.py" -o push_cookie.py\n` +
     `echo "This link is single-use — the server rejects it after this push succeeds."\n` +
     `python push_cookie.py --server "${base}" --token "${token}"\n`
