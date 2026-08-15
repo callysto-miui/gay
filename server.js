@@ -16,6 +16,9 @@ app.use(express.json());
 //  - /healthz (uptime pingers need this open or the free dyno spins down)
 //  - /termux/* (already protected by its own random single-use token; curl|bash
 //    can't answer a basic-auth prompt anyway)
+//  - /api/cookie (its own Bearer-token auth — one-time link or
+//    COOKIE_PUSH_TOKEN. push_cookie.py sends "Authorization: Bearer <token>",
+//    not Basic, and has no way to answer a password prompt either.)
 const SITE_USER = process.env.SITE_USER || 'admin';
 const SITE_PASSWORD = process.env.SITE_PASSWORD || '';
 
@@ -27,7 +30,7 @@ function timingSafeEqualStr(a, b) {
 }
 
 function requireSitePassword(req, res, next) {
-  if (req.path === '/healthz' || req.path.startsWith('/termux/')) return next();
+  if (req.path === '/healthz' || req.path === '/api/cookie' || req.path.startsWith('/termux/')) return next();
   if (!SITE_PASSWORD) return next(); // no password set -> open (local dev fallback)
 
   const header = req.headers.authorization || '';
