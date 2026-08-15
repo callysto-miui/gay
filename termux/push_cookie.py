@@ -230,8 +230,23 @@ def main():
     except XiaomiEmailVerificationRequired as e:
         print(f"[Login] Email verification required: {e.masked_email} ({e.attempts_left} attempt(s) left today)")
         auth.send_email_code()
-        code = input("Enter the code you received by email: ").strip()
-        account = auth.verify_email_code(code)
+        max_tries = 3
+        account = None
+        for attempt in range(1, max_tries + 1):
+            code = input(f"Enter the code you received by email (attempt {attempt}/{max_tries}): ").strip()
+            try:
+                account = auth.verify_email_code(code)
+                break
+            except XiaomiLoginError as verify_err:
+                is_wrong_code = "Invalid verification code" in str(verify_err)
+                if is_wrong_code and attempt < max_tries:
+                    print(
+                        f"[Login] {verify_err} Double-check the newest email (not an old code) — "
+                        "each wrong guess also costs one of Xiaomi's limited daily attempts."
+                    )
+                    continue
+                print(f"[Login] Error: {verify_err}")
+                sys.exit(1)
     except XiaomiLoginError as e:
         print(f"[Login] Error: {e}")
         sys.exit(1)
