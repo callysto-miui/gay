@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const express = require('express');
 const path = require('path');
 const { XiaomiAuthClient, XiaomiLoginError, XiaomiEmailVerificationRequired } = require('./lib/xiaomiAuth');
@@ -9,6 +10,42 @@ const { generateToken, validateToken } = require('./lib/provision');
 
 const app = express();
 app.use(express.json());
+
+// --- Site-wide password gate (HTTP Basic Auth). ---
+// Set SITE_PASSWORD in Render's env vars. Everything is locked except:
+//  - /healthz (uptime pingers need this open or the free dyno spins down)
+//  - /termux/* (already protected by its own random single-use token; curl|bash
+//    can't answer a basic-auth prompt anyway)
+const SITE_USER = process.env.SITE_USER || 'admin';
+const SITE_PASSWORD = process.env.SITE_PASSWORD || '';
+
+function timingSafeEqualStr(a, b) {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+function requireSitePassword(req, res, next) {
+  if (req.path === '/healthz' || req.path.startsWith('/termux/')) return next();
+  if (!SITE_PASSWORD) return next(); // no password set -> open (local dev fallback)
+
+  const header = req.headers.authorization || '';
+  const [scheme, encoded] = header.split(' ');
+  if (scheme === 'Basic' && encoded) {
+    const decoded = Buffer.from(encoded, 'base64').toString('utf8');
+    const sep = decoded.indexOf(':');
+    const user = sep === -1 ? decoded : decoded.slice(0, sep);
+    const pass = sep === -1 ? '' : decoded.slice(sep + 1);
+    if (timingSafeEqualStr(user, SITE_USER) && timingSafeEqualStr(pass, SITE_PASSWORD)) {
+      return next();
+    }
+  }
+  res.set('WWW-Authenticate', 'Basic realm="HyperOS AAU"');
+  return res.status(401).send('Authentication required.');
+}
+
+app.use(requireSitePassword);
 app.use(express.static(path.join(__dirname, 'public')));
 
 const PORT = process.env.PORT || 3000;
